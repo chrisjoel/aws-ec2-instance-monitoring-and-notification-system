@@ -1,0 +1,84 @@
+import boto3
+import json
+import os
+import logging
+
+# Configure logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def lambda_handler(event, context):
+    """
+    AWS Lambda handler function to fetch running EC2 instances and send a notification via SNS.
+    """
+    # Environment variable for SNS Topic ARN
+    sns_topic_arn = os.environ.get('SNS_TOPIC_ARN')
+    if not sns_topic_arn:
+        logger.error("Missing required environment variable: SNS_TOPIC_ARN")
+        return {
+            'statusCode': 500,
+            'body': json.dumps("Error: Missing required environment variable: SNS_TOPIC_ARN")
+        }
+
+    # Initialize boto3 clients
+    ec2_client = boto3.client('ec2')
+    sns_client = boto3.client('sns')
+
+    # Describe running instances
+    logger.info("Attempting to describe running instances")
+    try:
+        response = ec2_client.describe_instances(
+            Filters=[{'Name': 'instance-state-name', 'Values': ['running']}]
+        )
+        logger.info("Successfully described instances")
+    except Exception as e:
+        logger.error(f"Error describing instances: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps(f"Error describing instances: {str(e)}")
+        }
+
+    # Check for running instances
+    if not response.get('Reservations'):
+        logger.info("No running instances found.")
+        return {
+            'statusCode': 200,
+            'body': json.dumps("No running instances found.")
+        }
+
+    running_instances = []
+
+    # Process the response to gather running instance details
+    for reservation in response.get('Reservations', []):
+        for instance in reservation.get('Instances', []):
+            instance_info = {
+                'InstanceId': instance['InstanceId'],
+                'InstanceType': instance['InstanceType'],
+                'PublicIpAddress': instance.get('PublicIpAddress', 'N/A'),
+                'PrivateIpAddress': instance.get('PrivateIpAddress', 'N/A'),
+            }
+            running_instances.append(instance_info)
+
+    # Prepare the message
+    message = f"Running instances:\n{json.dumps(running_instances, indent=2)}" if running_instances else "No running instances found."
+    logger.info(f"Found {len(running_instances)} running instances." if running_instances else "No running instances found.")
+
+    # Publish to SNS
+    try:
+        sns_client.publish(
+            TopicArn=sns_topic_arn,
+            Subject='AWS Running Instances Notification',
+            Message=message
+        )
+        logger.info("SNS notification sent successfully.")
+    except Exception as e:
+        logger.error(f"Error sending SNS notification: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps(f"Error sending SNS notification: {str(e)}")
+        }
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps("Notification sent successfully!")
+    }
